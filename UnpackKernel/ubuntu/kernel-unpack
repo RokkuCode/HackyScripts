@@ -1,0 +1,60 @@
+#!/bin/bash
+
+KERNEL_VERSION="$1"
+KERNEL_PATH="$2"
+
+# extract-vmlinux is in /usr/local/bin
+PATH="${PATH}:/usr/local/bin"
+
+# Ensure we have the extract-linux tool
+if ! command -v extract-vmlinux > /dev/null; then
+        echo >&2 "Command 'extract-vmlinux' is not available (https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-vmlinux),  Aborting"
+        exit 1
+fi
+
+# The KERNEL_PATH must be valid
+if [ ! -f "${KERNEL_PATH}" ]; then
+        echo >&2 "Kernel file '${KERNEL_PATH}' not found. Aborting"
+        exit 1
+fi
+
+# Create a temp file
+TEMP_FILE=$(mktemp /tmp/decompress-kernel-XXXXX)
+trap "rm -f ${TEMP_FILE}" 0
+
+# If the given kernel file is still a bzimage see if its needs decompression
+if echo "$(file -b "${KERNEL_PATH}")" | grep -q "^Linux kernel x86 boot executable bzImage"; then
+
+        # Kernel is probably lz4 if there are lz4 headers in it
+        LZ4_HEADER="$(printf '\002!L\030')"
+        if ! grep -aqo "${LZ4_HEADER}" ${KERNEL_PATH}; then
+                echo "No lz4 compression headers found, skipping..."
+                exit 0
+        fi
+
+        echo "Decompressing '${KERNEL_PATH}'..."
+        # Extract the kernel and replace existing if successful
+        if extract-vmlinux ${KERNEL_PATH} > ${TEMP_FILE}; then
+
+                # Double check the kernel is a valid ELF image
+                if ! readelf -h ${TEMP_FILE} > /dev/null; then
+                        echo >&2 "Decompression of kernel file '${KERNEL_PATH}' failed!, not a valid ELF image"
+                        exit 1
+                fi
+
+                echo "Decompression of kernel file '${KERNEL_PATH}' successful"
+                cp -v ${TEMP_FILE} ${KERNEL_PATH}
+
+        else
+                echo >&2 "Decompression of kernel file '${KERNEL_PATH}' failed!"
+                exit 1
+        fi
+
+# Perhaps its already been decompressed
+elif echo "$(file -b "${KERNEL_PATH}")" | grep -q "^ELF 64-bit LSB executable"; then
+        echo "Kernel file '${KERNEL_PATH}' appears to be decompressed already. skipping"
+
+else
+        echo >&2 "Unable to determine the state of kernel file '${KERNEL_PATH}'"
+        exit 1
+fi
